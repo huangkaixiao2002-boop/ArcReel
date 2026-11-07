@@ -107,6 +107,7 @@ class TestRegistry:
             "dashscope-tts",
             "minimax-tts",
             "gemini-tts",
+            "mimo-tts",
         }
 
     def test_each_spec_has_required_fields(self):
@@ -126,6 +127,7 @@ class TestRegistry:
                 "kling",
                 "openrouter",
                 "xai",
+                "mimo",
             }
             # 注册表里的都是内置端点，来源恒为 builtin；用户端点不进注册表，由 ce- 键现构造。
             assert spec.source == "builtin"
@@ -340,7 +342,7 @@ class TestRegistry:
         image_keys = {s.key for s in ENDPOINT_REGISTRY.values() if s.media_type == "image"}
         video_keys = {s.key for s in ENDPOINT_REGISTRY.values() if s.media_type == "video"}
         audio_keys = {s.key for s in ENDPOINT_REGISTRY.values() if s.media_type == "audio"}
-        assert audio_keys == {"openai-tts", "dashscope-tts", "minimax-tts", "gemini-tts"}
+        assert audio_keys == {"openai-tts", "dashscope-tts", "minimax-tts", "gemini-tts", "mimo-tts"}
         assert text_keys == {"openai-chat", "openai-responses", "gemini-generate", "anthropic-messages"}
         assert image_keys == {
             "openai-images",
@@ -652,6 +654,8 @@ class TestInferEndpoint:
             ("vidu-tts", "openai", "openai-tts"),  # tts 尾缀优先于 text 默认
             ("speech-1.5", "openai", "openai-tts"),  # Fish Audio 风格 id
             ("cosyvoice-v2", "openai", "openai-tts"),
+            ("mimo-v2.5-tts", "openai", "mimo-tts"),
+            ("proxy/MiMo-V2.5-TTS-VoiceDesign", "openai", "mimo-tts"),
             # audio endpoint 仅 OpenAI 兼容一条，google 发现格式同样归 openai-tts
             ("tts-1", "google", "openai-tts"),
             # 不应误伤：含 audio 字样的 chat 模型、ASR（语音转文字）、视频/图像家族仍按原分支

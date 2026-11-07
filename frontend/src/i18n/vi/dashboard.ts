@@ -1770,6 +1770,7 @@ export default {
   'endpoint_openai_tts_display': 'OpenAI Giọng nói (TTS)',
   'endpoint_dashscope_tts_display': 'Alibaba Model Studio (Giọng nói TTS)',
   'endpoint_gemini_tts_display': 'Giọng nói Google Gemini (TTS)',
+  'endpoint_mimo_tts_display': 'Xiaomi MiMo Giọng nói (TTS)',
   'endpoint_ark_chat_display': 'Volcengine Ark (Văn bản)',
   'endpoint_grok_chat_display': 'xAI Grok (Văn bản)',
   'endpoint_agnes_chat_display': 'Agnes (Văn bản)',

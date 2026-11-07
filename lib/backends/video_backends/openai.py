@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from openai import AsyncOpenAI
 
@@ -32,9 +35,7 @@ from lib.backends.openai_shared import OPENAI_RETRYABLE_ERRORS, create_openai_cl
 from lib.backends.providers import PROVIDER_OPENAI
 from lib.backends.transport_layer import TransportLayer
 from lib.backends.video_backends.metering import video_usage
-from lib.backends.video_backends.name_family import (
-    EntryBoundCapabilities,
-)
+from lib.backends.video_backends.name_family import EntryBoundCapabilities
 from lib.billing.metering import Usage
 from lib.infra.async_thread import run_noninterruptible_sync
 from lib.infra.logging_utils import format_kwargs_for_log
@@ -155,6 +156,10 @@ class OpenAIVideoBackend(EntryBoundCapabilities, ProviderJobIdPersistenceMixin):
         if not model:
             raise ValueError("OpenAIVideoBackend 需要指定模型")
         self._model = model
+        # Official Sora and generic OpenAI-compatible relays use the SDK's
+        # multipart protocol. Muse2API is the documented JSON protocol used
+        # by the ``muse-video`` catalog model.
+        self._uses_custom_video_protocol = _is_muse_video_protocol(model, base_url)
 
     @property
     def name(self) -> str:
@@ -322,6 +327,13 @@ class OpenAIVideoBackend(EntryBoundCapabilities, ProviderJobIdPersistenceMixin):
     @with_retry_async(retryable_errors=OPENAI_RETRYABLE_ERRORS)
     async def _create_video(self, **kwargs):
         """仅创建视频任务（带重试）；轮询交由 _poll_until_complete 自管。"""
+        if self._uses_custom_video_protocol:
+            payload = await self._client.post(
+                "/videos",
+                cast_to=dict[str, Any],
+                body=_custom_video_request_body(kwargs),
+            )
+            return _custom_video_object(payload, default_model=self._model)
         return await self._client.videos.create(**kwargs)
 
     async def _poll_until_complete(self, client: AsyncOpenAI, video_id: str, poll_timeout_seconds: int):
@@ -336,8 +348,13 @@ class OpenAIVideoBackend(EntryBoundCapabilities, ProviderJobIdPersistenceMixin):
         #   - failed    → is_failed 已抛 RuntimeError
         #   - expired   → 在 caller 处按 generate vs resume 上下文抛 RuntimeError / ResumeExpiredError
         # 关键不变量：is_failed 不识别 expired，避免覆盖 caller 分流。
+        poll_fn = (
+            (lambda: self._retrieve_custom_video(client, video_id))
+            if self._uses_custom_video_protocol
+            else (lambda: client.videos.retrieve(video_id))
+        )
         return await poll_with_retry(
-            poll_fn=lambda: client.videos.retrieve(video_id),
+            poll_fn=poll_fn,
             is_done=lambda v: _video_status(v) in TERMINAL_PROVIDER_STATUSES,
             is_failed=lambda v: (
                 f"Sora 视频生成失败: {_video_error_message(v)}"
@@ -358,12 +375,91 @@ class OpenAIVideoBackend(EntryBoundCapabilities, ProviderJobIdPersistenceMixin):
         SDK 取件抛的不是 ``HTTPStatusError``，故退到按 ``OPENAI_RETRYABLE_ERRORS`` 判定，
         终止条件仍是共用的产物下载预算。
         """
+        if not self._uses_custom_video_protocol:
+            return await with_artifact_retry(
+                lambda: client.videos.download_content(video_id),
+                label="OpenAI",
+                retry_if=None,
+                retryable_errors=OPENAI_RETRYABLE_ERRORS,
+            )
+
+        async def _download_muse_content():
+            payload = await client.get(f"/videos/{video_id}", cast_to=dict[str, Any])
+            result = payload.get("result")
+            url = result.get("url") if isinstance(result, dict) else None
+            if not isinstance(url, str) or not url.strip():
+                raise RuntimeError("Muse video response did not contain result.url")
+            absolute_url = _resolve_media_url(str(client.base_url), url)
+            content = await client.get(absolute_url, cast_to=bytes)
+            return SimpleNamespace(content=content)
+
         return await with_artifact_retry(
-            lambda: client.videos.download_content(video_id),
-            label="OpenAI",
+            _download_muse_content,
+            label="Muse",
             retry_if=None,
             retryable_errors=OPENAI_RETRYABLE_ERRORS,
         )
+
+    async def _retrieve_custom_video(self, client: AsyncOpenAI, video_id: str):
+        payload = await client.get(f"/videos/{video_id}", cast_to=dict[str, Any])
+        return _custom_video_object(payload, default_model=self._model)
+
+
+def _is_muse_video_protocol(model: str, base_url: str | None) -> bool:
+    """Return whether the configured OpenAI video model speaks Muse2API JSON.
+
+    A non-official base URL alone is insufficient: custom providers also use
+    this backend for standard OpenAI-compatible relays, and those still need
+    multipart ``videos.create`` plus ``videos/{id}/content``.
+    """
+    del base_url
+    return model.strip().lower() == "muse-video"
+
+
+def _size_to_aspect_ratio(size: object) -> str | None:
+    if not isinstance(size, str) or "x" not in size:
+        return size if isinstance(size, str) else None
+    try:
+        width, height = (int(part) for part in size.split("x", 1))
+    except ValueError:
+        return size
+    from math import gcd
+
+    divisor = gcd(width, height)
+    return f"{width // divisor}:{height // divisor}" if divisor else size
+
+
+def _custom_video_request_body(kwargs: dict) -> dict:
+    body = dict(kwargs)
+    seconds = body.pop("seconds", None)
+    if seconds is not None:
+        body["duration"] = int(seconds)
+    if "size" in body:
+        body["size"] = _size_to_aspect_ratio(body["size"])
+    # Muse's documented JSON API has no multipart input_reference field. T2V
+    # requests (the supported path) therefore contain only JSON primitives.
+    body.pop("input_reference", None)
+    return body
+
+
+def _custom_video_object(payload: object, *, default_model: str) -> SimpleNamespace:
+    data = payload if isinstance(payload, dict) else {}
+    return SimpleNamespace(
+        id=data.get("id") or data.get("task_id"),
+        status=data.get("status"),
+        seconds=data.get("seconds"),
+        error=data.get("error"),
+        result=data.get("result"),
+        model=data.get("model") or default_model,
+    )
+
+
+def _resolve_media_url(base_url: str, media_url: str) -> str:
+    if media_url.startswith(("http://", "https://")):
+        return media_url
+    parsed = urlsplit(base_url)
+    origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    return urljoin(origin + "/", media_url)
 
 
 def _encode_start_image(image_path: Path) -> tuple[str, bytes, str]:

@@ -24,6 +24,7 @@ from arcreel_market_core.endpoint_definition.media_type import definition_media_
 from arcreel_market_core.video_backend_contract import ReferenceAudioMode, VideoCapabilities
 from lib.backends.audio_backends.dashscope import DashScopeAudioBackend
 from lib.backends.audio_backends.gemini import GeminiAudioBackend
+from lib.backends.audio_backends.mimo import MimoAudioBackend
 from lib.backends.audio_backends.minimax import MiniMaxAudioBackend
 from lib.backends.audio_backends.openai import OpenAIAudioBackend
 from lib.backends.dashscope_shared import dashscope_native_base_url
@@ -446,6 +447,18 @@ def _build_openai_tts(provider, model_id: str, path_overrides: PathOverrides = N
     return CustomAudioBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
 
 
+def _build_mimo_tts(provider, model_id: str, path_overrides: PathOverrides = NO_PATH_OVERRIDES) -> CustomAudioBackend:
+    base_url = ensure_openai_base_url(provider.base_url)
+    delegate = MimoAudioBackend(
+        api_key=provider.api_key,
+        base_url=base_url,
+        model=model_id,
+        provider_name=provider.provider_id,
+        transport_layer=path_override_layer(_MIMO_TTS_REQUESTS, path_overrides, provider.base_url, base_url, model_id),
+    )
+    return CustomAudioBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
+
+
 def _build_dashscope_tts(
     provider, model_id: str, path_overrides: PathOverrides = NO_PATH_OVERRIDES
 ) -> CustomAudioBackend:
@@ -618,6 +631,7 @@ _OPENAI_IMAGES_GENERATE, _OPENAI_IMAGES_EDIT = _python_requests(
     ("edit", "cp_request_edit", "/images/edits"),
 )
 _OPENAI_TTS_REQUESTS = _python_requests("append_v1", ("generate", "cp_request_generate", "/audio/speech"))
+_MIMO_TTS_REQUESTS = _python_requests("append_v1", ("generate", "cp_request_generate", "/chat/completions"))
 _OPENAI_VIDEO_REQUESTS = _python_requests(
     "append_v1",
     ("submit", "cp_request_submit", "/videos"),
@@ -998,6 +1012,16 @@ ENDPOINT_REGISTRY: dict[str, EndpointSpec] = {
         request_path_template="/v1/audio/speech",
         build_backend=_build_openai_tts,
         requests=_OPENAI_TTS_REQUESTS,
+    ),
+    "mimo-tts": EndpointSpec(
+        key="mimo-tts",
+        media_type="audio",
+        family="mimo",
+        display_name_key="endpoint_mimo_tts_display",
+        request_method="POST",
+        request_path_template="/v1/chat/completions",
+        build_backend=_build_mimo_tts,
+        requests=_MIMO_TTS_REQUESTS,
     ),
     "dashscope-tts": EndpointSpec(
         key="dashscope-tts",
@@ -1535,6 +1559,15 @@ _VIDEO_PATTERN = re.compile(
 _AUDIO_PATTERN = re.compile(r"tts|speech|cosyvoice", re.IGNORECASE)
 # 通义 TTS 家族（qwen-tts / qwen3-tts-flash 等）走百炼原生同步端点，不是 /v1/audio/speech
 _QWEN_TTS_PATTERN = re.compile(r"qwen3?-tts", re.IGNORECASE)
+# MiMo v2.5 TTS uses /chat/completions and returns base64 audio in the
+# response message, so it needs a dedicated backend.
+_MIMO_TTS_MODELS = frozenset(
+    {
+        "mimo-v2.5-tts",
+        "mimo-v2.5-tts-voicedesign",
+        "mimo-v2.5-tts-voiceclone",
+    }
+)
 # MiniMax 语音型号（speech-2.8-hd / speech-02-turbo 等，剥离命名空间后整段比较）走 t2a_v2。
 # 必须带 -hd / -turbo 档位后缀：Fish Audio 的 speech-1.5 等同名前缀 id 仍是 /v1/audio/speech。
 _MINIMAX_TTS_PATTERN = re.compile(r"speech-[\d.]+-(?:hd|turbo)")
@@ -1777,6 +1810,8 @@ def _infer_endpoint_by_name(model_id: str, discovery_format: str) -> str:
             return image_endpoint_for_name("ark", model_id)
         return "gemini-image" if discovery_format == "google" else "openai-images"
     if _AUDIO_PATTERN.search(model_id) and not _ASR_PATTERN.search(model_id):
+        if canonical in _MIMO_TTS_MODELS:
+            return "mimo-tts"
         if _QWEN_TTS_PATTERN.search(model_id):
             return "dashscope-tts"
         return "minimax-tts" if _MINIMAX_TTS_PATTERN.fullmatch(canonical) else "openai-tts"

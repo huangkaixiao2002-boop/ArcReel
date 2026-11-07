@@ -55,6 +55,7 @@ def create_openai_client(
     base_url: str | None = None,
     max_retries: int | None = None,
     transport_layer: TransportLayer | None = None,
+    default_headers: dict[str, str] | None = None,
 ) -> AsyncOpenAI:
     """创建 AsyncOpenAI 客户端，统一处理 api_key 和 base_url。
 
@@ -69,4 +70,6 @@ def create_openai_client(
         kwargs["max_retries"] = max_retries
     if transport_layer is not None:
         kwargs["http_client"] = layer_async_client(DefaultAsyncHttpxClient(), transport_layer)
+    if default_headers:
+        kwargs["default_headers"] = default_headers
     return AsyncOpenAI(**kwargs)

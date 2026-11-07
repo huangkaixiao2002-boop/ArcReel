@@ -1780,6 +1780,7 @@ export default {
   'endpoint_openai_tts_display': 'OpenAI Speech (TTS)',
   'endpoint_dashscope_tts_display': 'Alibaba Model Studio (TTS)',
   'endpoint_gemini_tts_display': 'Google Gemini Speech (TTS)',
+  'endpoint_mimo_tts_display': 'Xiaomi MiMo Speech (TTS)',
   'endpoint_ark_chat_display': 'Volcengine Ark (Text)',
   'endpoint_grok_chat_display': 'xAI Grok (Text)',
   'endpoint_agnes_chat_display': 'Agnes (Text)',

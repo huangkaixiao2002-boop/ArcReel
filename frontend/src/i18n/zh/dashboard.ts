@@ -1779,6 +1779,7 @@ export default {
   'endpoint_openai_tts_display': 'OpenAI 语音合成 (TTS)',
   'endpoint_dashscope_tts_display': '阿里百炼（语音合成）',
   'endpoint_gemini_tts_display': 'Gemini 语音合成 (TTS)',
+  'endpoint_mimo_tts_display': '小米 MiMo 语音合成 (TTS)',
   'endpoint_ark_chat_display': '火山方舟（文本）',
   'endpoint_grok_chat_display': 'xAI Grok（文本）',
   'endpoint_agnes_chat_display': 'Agnes（文本）',

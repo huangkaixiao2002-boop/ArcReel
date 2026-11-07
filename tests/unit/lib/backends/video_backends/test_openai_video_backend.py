@@ -20,7 +20,7 @@ from tests.fakes import (
     captured_openai_clients,
     captured_provider_job_ids,
 )
-from tests.http_capture import capture_http, only_request
+from tests.http_capture import capture_http, only_request, request_json
 from tests.unit.lib.backends.write_cancel_gate import GatedWritePath, WriteGate, cancel_during_write
 
 
@@ -898,3 +898,58 @@ class TestSubmittedBaseUrlReplay:
 
         assert result.task_id == "vid-a"
         assert (tmp_path / "out.mp4").read_bytes() == b"resumed"
+
+
+class TestMuseVideoProtocol:
+    async def test_json_submit_poll_and_media_download(self, tmp_path: Path):
+        from lib.backends.video_backends.openai import OpenAIVideoBackend
+
+        base_url = "https://muse.example.com/v1"
+        with capture_http() as router, bounded_poll_clock():
+            submit = router.post(f"{base_url}/videos").mock(
+                return_value=httpx.Response(200, json={"id": "muse-1", "status": "queued"})
+            )
+            poll = router.get(f"{base_url}/videos/muse-1").mock(
+                side_effect=[
+                    httpx.Response(200, json={"id": "muse-1", "status": "in_progress"}),
+                    httpx.Response(
+                        200,
+                        json={
+                            "id": "muse-1",
+                            "status": "succeeded",
+                            "result": {"url": "/v1/media/muse-1.mp4"},
+                        },
+                    ),
+                    httpx.Response(
+                        200,
+                        json={
+                            "id": "muse-1",
+                            "status": "succeeded",
+                            "result": {"url": "/v1/media/muse-1.mp4"},
+                        },
+                    ),
+                ]
+            )
+            download = router.get(f"{base_url}/media/muse-1.mp4").mock(
+                return_value=httpx.Response(200, content=b"muse-video")
+            )
+
+            result = await OpenAIVideoBackend(api_key="k", model="muse-video", base_url=base_url).generate(
+                VideoGenerationRequest(
+                    prompt="一只小猫在草地上走动",
+                    output_path=tmp_path / "out.mp4",
+                    duration_seconds=8,
+                    aspect_ratio="9:16",
+                )
+            )
+
+        assert request_json(only_request(submit)) == {
+            "prompt": "一只小猫在草地上走动",
+            "model": "muse-video",
+            "duration": 8,
+            "size": "9:16",
+        }
+        assert poll.call_count == 3
+        assert download.call_count == 1
+        assert result.task_id == "muse-1"
+        assert (tmp_path / "out.mp4").read_bytes() == b"muse-video"
